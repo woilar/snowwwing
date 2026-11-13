@@ -189,7 +189,7 @@ final class DesktopScene {
     }
 
     func brush(from previous: CGPoint, to mouse: CGPoint) {
-        guard visible else { return }
+        guard visible, !world.snowfallOnly, previous != mouse else { return }
         world.brushSnow(from: CGPoint(x: previous.x - frame.minX, y: previous.y - frame.minY),
                         to: CGPoint(x: mouse.x - frame.minX, y: mouse.y - frame.minY))
     }
@@ -208,16 +208,30 @@ final class WindowTracker {
     private var nextDockRead = Date.distantPast
     private let dockQueue = DispatchQueue(label: "WinterDesktop.Dock", qos: .utility)
     private var dockReadPending = false
+    private var dockGeneration = 0
+    private var cache = WindowTrackingCache()
 
-    func update(_ scenes: [DesktopScene]) {
-        guard let main = NSScreen.screens.first else { return }
+    func invalidate() {
+        cache.invalidate()
+        dockGeneration += 1
+        dockRect = nil
+        nextDockRead = .distantPast
+    }
+
+    @discardableResult
+    func update(_ scenes: [DesktopScene]) -> Bool {
+        let activeScenes = scenes.filter { $0.visible && !$0.world.snowfallOnly }
+        guard cache.beginScan(at: ProcessInfo.processInfo.systemUptime,
+                              hasSurfaces: !activeScenes.isEmpty) else { return false }
+        let screens = NSScreen.screens
+        guard let main = screens.first else { return false }
         let mainTop = main.frame.maxY
         func cocoaRect(_ rect: CGRect) -> CGRect {
             CGRect(x: rect.minX, y: mainTop - rect.maxY, width: rect.width, height: rect.height)
         }
         let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
                                                  kCGNullWindowID) as? [[String: Any]] ?? []
-        var roofs: [(String, CGRect)] = []
+        var roofs: [TrackedRoof] = []
         var dockWindow: CGRect?
         for info in windows {
             guard let pid = info[kCGWindowOwnerPID as String] as? Int, pid != Int(getpid()),
@@ -227,7 +241,7 @@ final class WindowTracker {
                   (info[kCGWindowAlpha as String] as? Double ?? 1) > 0.1 else { continue }
             let layer = info[kCGWindowLayer as String] as? Int ?? -1
             if layer == 0, let number = info[kCGWindowNumber as String] as? Int {
-                roofs.append(("window-\(number)", cocoaRect(rect)))
+                roofs.append(TrackedRoof(id: "window-\(number)", rect: cocoaRect(rect)))
             }
             if info[kCGWindowOwnerName as String] as? String == "Dock", layer == 20,
                min(rect.width, rect.height) < 180 {
@@ -239,12 +253,14 @@ final class WindowTracker {
                let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first {
                 dockReadPending = true
                 let pid = dock.processIdentifier
+                let generation = dockGeneration
                 dockQueue.async { [weak self] in
                     let rect = Self.readDock(pid: pid)
                     DispatchQueue.main.async { [weak self] in
                         guard let self else { return }
-                        self.dockRect = rect
                         self.dockReadPending = false
+                        guard generation == self.dockGeneration else { return }
+                        self.dockRect = rect
                         self.nextDockRead = Date().addingTimeInterval(0.7)
                     }
                 }
@@ -253,14 +269,26 @@ final class WindowTracker {
                 nextDockRead = Date().addingTimeInterval(0.7)
             }
         }
-        if let rect = dockRect.map(cocoaRect) ?? dockWindow { roofs.insert(("dock", rect), at: 0) }
-        for scene in scenes {
+        if let rect = dockRect.map(cocoaRect) ?? dockWindow {
+            roofs.insert(TrackedRoof(id: "dock", rect: rect), at: 0)
+        }
+        let geometry = activeScenes.map { scene -> TrackedScreen in
+            let screenTop = screens.first { $0.frame == scene.frame }?.visibleFrame.maxY ?? scene.frame.maxY
+            return TrackedScreen(frame: scene.frame,
+                                 roofCeiling: min(scene.frame.maxY - 20, screenTop - 1) - scene.frame.minY)
+        }
+        guard cache.needsRebuild(WindowLayoutSnapshot(roofs: roofs, screens: geometry)) else {
+            // Preserve the last observation time for movement velocity, even on cache hits.
+            activeScenes.forEach { $0.world.observeUnchangedLedges() }
+            return true
+        }
+        for (scene, screen) in zip(activeScenes, geometry) {
             var front: [CGRect] = []
             var ledges: [Ledge] = []
             var hiddenRoofs: Set<String> = []
-            let screenTop = NSScreen.screens.first { $0.frame == scene.frame }?.visibleFrame.maxY ?? scene.frame.maxY
-            let roofCeiling = min(scene.frame.maxY - 20, screenTop - 1) - scene.frame.minY
-            for (id, global) in roofs {
+            let roofCeiling = screen.roofCeiling
+            for roof in roofs {
+                let id = roof.id, global = roof.rect
                 let local = global.offsetBy(dx: -scene.frame.minX, dy: -scene.frame.minY)
                 defer { front.append(local) }
                 let hidden = id.hasPrefix("window-") && (local.maxY >= roofCeiling || local.height <= 40)
@@ -277,6 +305,7 @@ final class WindowTracker {
             }
             scene.world.setLedges(ledges, hiddenRoofs: hiddenRoofs)
         }
+        return true
     }
 
     private static func readDock(pid: pid_t) -> CGRect? {
@@ -332,7 +361,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     var paused = false
     var sleeping = false
     var lastTick = ProcessInfo.processInfo.systemUptime
-    var lastScan: TimeInterval = 0
     var previousMouse = NSEvent.mouseLocation
     var pauseItem: NSMenuItem!
     var dockItem: NSMenuItem!
@@ -462,6 +490,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     @objc func rebuildScreens() {
+        tracker.invalidate()
         scenes.forEach { $0.close() }
         scenes = NSScreen.screens.map { DesktopScene(screen: $0) }
         for scene in scenes {
@@ -485,9 +514,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let previous = previousMouse
         previousMouse = mouse
         guard !paused, !sleeping else { return }
-        if now - lastScan >= 1.0 / 30 {
-            tracker.update(scenes)
-            lastScan = now
+        if tracker.update(scenes) {
             dockItem.title = L10n.text(AXIsProcessTrusted() ? "Универсальный доступ разрешён ✓" : "Подключить снег на Dock…")
         }
         for scene in scenes where scene.visible {
@@ -499,6 +526,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     @objc func togglePause() {
         paused.toggle()
+        tracker.invalidate()
         pauseItem.title = L10n.text(paused ? "Продолжить снегопад" : "Пауза и скрыть эффекты")
         scenes.forEach { $0.setVisible(!paused && !sleeping) }
     }
@@ -533,6 +561,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
     @objc func toggleSnowfallOnly() {
         snowfallOnly.toggle()
+        tracker.invalidate()
         UserDefaults.standard.set(snowfallOnly, forKey: "snowfallOnly")
         snowfallOnlyItem.state = snowfallOnly ? .on : .off
         for scene in scenes {
@@ -590,8 +619,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             }
         }
     }
-    @objc func willSleep() { sleeping = true; scenes.forEach { $0.setVisible(false) } }
-    @objc func didWake() { sleeping = false; lastTick = ProcessInfo.processInfo.systemUptime; scenes.forEach { $0.setVisible(!paused) } }
+    @objc func willSleep() { sleeping = true; tracker.invalidate(); scenes.forEach { $0.setVisible(false) } }
+    @objc func didWake() { sleeping = false; tracker.invalidate(); lastTick = ProcessInfo.processInfo.systemUptime; scenes.forEach { $0.setVisible(!paused) } }
     @objc func addBall() {
         guard !snowfallOnly else { return }
         guard scenes.reduce(0, { $0 + $1.world.balls.count }) < 6 else { return }
@@ -639,3 +668,4 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         NotificationCenter.default.removeObserver(self)
     }
 }
+
