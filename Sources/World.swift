@@ -15,8 +15,13 @@ let plowPileOutline: [CGPoint] = {
     func curve(_ a: CGPoint, _ b: CGPoint, _ c: CGPoint, _ d: CGPoint) -> [CGPoint] {
         (0...16).map { i in
             let t = CGFloat(i) / 16, s = 1 - t
-            return CGPoint(x: s*s*s*a.x + 3*s*s*t*b.x + 3*s*t*t*c.x + t*t*t*d.x,
-                           y: s*s*s*a.y + 3*s*s*t*b.y + 3*s*t*t*c.y + t*t*t*d.y)
+            let w0 = s * s * s
+            let w1 = 3 * s * s * t
+            let w2 = 3 * s * t * t
+            let w3 = t * t * t
+            let x = w0 * a.x + w1 * b.x + w2 * c.x + w3 * d.x
+            let y = w0 * a.y + w1 * b.y + w2 * c.y + w3 * d.y
+            return CGPoint(x: x, y: y)
         }
     }
     return curve(.zero, CGPoint(x: 0.04, y: 0.5), CGPoint(x: 0.22, y: 1.03), CGPoint(x: 0.32, y: 1)) +
