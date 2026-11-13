@@ -7,57 +7,60 @@ func selfTest() {
         guard condition() else { fputs("FAIL: \(message)\n", stderr); exit(1) }
         checks += 1
     }
-    var tracking = WindowTrackingCache()
-    check(!tracking.beginScan(at: 0, hasSurfaces: false), "snowfall-only skips surface polling")
-    check(tracking.beginScan(at: 0, hasSurfaces: true), "surface tracking starts immediately")
-    check(!tracking.beginScan(at: 0.03, hasSurfaces: true), "animation tick does not trigger another window query")
-    check(!tracking.beginScan(at: 0.099, hasSurfaces: true), "window polling never exceeds 10 Hz")
-    check(tracking.beginScan(at: 0.1, hasSurfaces: true), "window polling resumes at the next interval")
-    let roofA = TrackedRoof(id: "window-1", rect: CGRect(x: 50, y: 100, width: 200, height: 150))
-    let roofB = TrackedRoof(id: "window-2", rect: CGRect(x: 100, y: 120, width: 200, height: 150))
-    let screen = TrackedScreen(frame: CGRect(x: 0, y: 0, width: 800, height: 600), roofCeiling: 579)
-    let layout = WindowLayoutSnapshot(roofs: [roofA, roofB], screens: [screen])
-    check(tracking.needsRebuild(layout), "initial window layout builds surfaces")
-    check(!tracking.needsRebuild(layout), "unchanged window layout reuses surfaces")
-    check(tracking.needsRebuild(WindowLayoutSnapshot(roofs: [roofB, roofA], screens: [screen])),
-          "z-order changes invalidate occlusion even when window frames stay the same")
-    let moved = TrackedRoof(id: roofA.id, rect: roofA.rect.offsetBy(dx: 20, dy: 0))
-    check(tracking.needsRebuild(WindowLayoutSnapshot(roofs: [roofB, moved], screens: [screen])),
-          "moving a window invalidates surfaces")
-    let resized = TrackedRoof(id: moved.id, rect: CGRect(x: 70, y: 100, width: 100, height: 150))
-    check(tracking.needsRebuild(WindowLayoutSnapshot(roofs: [roofB, resized], screens: [screen])),
-          "resizing a window invalidates surfaces")
-    check(tracking.needsRebuild(WindowLayoutSnapshot(roofs: [roofB], screens: [screen])),
-          "closed windows are removed from surfaces")
-    let dock = TrackedRoof(id: "dock", rect: CGRect(x: 200, y: 0, width: 300, height: 60))
-    check(tracking.needsRebuild(WindowLayoutSnapshot(roofs: [dock, roofB], screens: [screen])),
-          "asynchronous Dock geometry updates invalidate surfaces")
-    let changedScreen = TrackedScreen(frame: screen.frame, roofCeiling: 599)
-    check(tracking.needsRebuild(WindowLayoutSnapshot(roofs: [dock, roofB], screens: [changedScreen])),
-          "menu bar and visible screen changes invalidate hidden roof filtering")
-    let secondScreen = TrackedScreen(frame: screen.frame.offsetBy(dx: 800, dy: 0), roofCeiling: 579)
-    check(tracking.needsRebuild(WindowLayoutSnapshot(roofs: [dock, roofB], screens: [screen, secondScreen])),
-          "monitor changes invalidate per-display geometry")
-    check(!tracking.beginScan(at: 0.11, hasSurfaces: false), "disabling surfaces stops queries immediately")
-    check(tracking.beginScan(at: 0.12, hasSurfaces: true) && tracking.needsRebuild(layout),
-          "restoring surfaces refreshes immediately instead of reusing stale geometry")
-    tracking.invalidate()
-    check(tracking.beginScan(at: 0.13, hasSurfaces: true) && tracking.needsRebuild(layout),
-          "screen recreation and resume invalidate equal geometry too")
-    let stationary = SnowWorld(size: CGSize(width: 800, height: 600))
-    stationary.setLedges([Ledge(id: "window-1", rect: roofA.rect, spans: [50...250])])
-    let cachedDrift = stationary.drifts.first { $0.ledge.id == "window-1" }!
-    cachedDrift.heights = cachedDrift.heights.map { _ in 8 }
-    let cachedHeights = cachedDrift.heights
-    stationary.elapsed = 2
-    stationary.observeUnchangedLedges()
-    check(stationary.drifts.contains { $0 === cachedDrift } && cachedDrift.heights == cachedHeights,
-          "cache hits preserve accumulated snow and drift identity")
-    check(cachedDrift.updatedAt == 2, "cache hits advance the last geometry observation time")
-    stationary.elapsed = 2.1
-    stationary.setLedges([Ledge(id: "window-1", rect: roofA.rect.offsetBy(dx: 40, dy: 0), spans: [90...290])])
-    check(cachedDrift.heights.reduce(0, +) < cachedHeights.reduce(0, +),
-          "fast movement after a stationary interval still sheds snow")
+    do {
+        var tracking = WindowTrackingCache()
+        check(!tracking.beginScan(at: 0, hasSurfaces: false), "snowfall-only skips surface polling")
+        check(tracking.beginScan(at: 0, hasSurfaces: true), "surface tracking starts immediately")
+        check(!tracking.beginScan(at: 0.03, hasSurfaces: true), "animation tick does not trigger another window query")
+        check(!tracking.beginScan(at: 0.099, hasSurfaces: true), "window polling never exceeds 10 Hz")
+        check(tracking.beginScan(at: 0.1, hasSurfaces: true), "window polling resumes at the next interval")
+        let roofA = TrackedRoof(id: "window-1", rect: CGRect(x: 50, y: 100, width: 200, height: 150))
+        let roofB = TrackedRoof(id: "window-2", rect: CGRect(x: 100, y: 120, width: 200, height: 150))
+        let screen = TrackedScreen(frame: CGRect(x: 0, y: 0, width: 800, height: 600), roofCeiling: 579)
+        let layout = WindowLayoutSnapshot(roofs: [roofA, roofB], screens: [screen])
+        check(tracking.needsRebuild(layout), "initial window layout builds surfaces")
+        check(!tracking.needsRebuild(layout), "unchanged window layout reuses surfaces")
+        check(tracking.needsRebuild(WindowLayoutSnapshot(roofs: [roofB, roofA], screens: [screen])),
+              "z-order changes invalidate occlusion even when window frames stay the same")
+        let moved = TrackedRoof(id: roofA.id, rect: roofA.rect.offsetBy(dx: 20, dy: 0))
+        check(tracking.needsRebuild(WindowLayoutSnapshot(roofs: [roofB, moved], screens: [screen])),
+              "moving a window invalidates surfaces")
+        let resized = TrackedRoof(id: moved.id, rect: CGRect(x: 70, y: 100, width: 100, height: 150))
+        check(tracking.needsRebuild(WindowLayoutSnapshot(roofs: [roofB, resized], screens: [screen])),
+              "resizing a window invalidates surfaces")
+        check(tracking.needsRebuild(WindowLayoutSnapshot(roofs: [roofB], screens: [screen])),
+              "closed windows are removed from surfaces")
+        let dock = TrackedRoof(id: "dock", rect: CGRect(x: 200, y: 0, width: 300, height: 60))
+        check(tracking.needsRebuild(WindowLayoutSnapshot(roofs: [dock, roofB], screens: [screen])),
+              "asynchronous Dock geometry updates invalidate surfaces")
+        let changedScreen = TrackedScreen(frame: screen.frame, roofCeiling: 599)
+        check(tracking.needsRebuild(WindowLayoutSnapshot(roofs: [dock, roofB], screens: [changedScreen])),
+              "menu bar and visible screen changes invalidate hidden roof filtering")
+        let secondScreen = TrackedScreen(frame: screen.frame.offsetBy(dx: 800, dy: 0), roofCeiling: 579)
+        check(tracking.needsRebuild(WindowLayoutSnapshot(roofs: [dock, roofB], screens: [screen, secondScreen])),
+              "monitor changes invalidate per-display geometry")
+        check(!tracking.beginScan(at: 0.11, hasSurfaces: false), "disabling surfaces stops queries immediately")
+        check(tracking.beginScan(at: 0.12, hasSurfaces: true) && tracking.needsRebuild(layout),
+              "restoring surfaces refreshes immediately instead of reusing stale geometry")
+        tracking.invalidate()
+        check(tracking.beginScan(at: 0.13, hasSurfaces: true) && tracking.needsRebuild(layout),
+              "screen recreation and resume invalidate equal geometry too")
+        let stationary = SnowWorld(size: CGSize(width: 800, height: 600))
+        stationary.setLedges([Ledge(id: "window-1", rect: roofA.rect, spans: [50...250])])
+        let cachedDrift = stationary.drifts.first { $0.ledge.id == "window-1" }!
+        cachedDrift.heights = cachedDrift.heights.map { _ in 8 }
+        let cachedHeights = cachedDrift.heights
+        stationary.elapsed = 2
+        stationary.observeUnchangedLedges()
+        check(stationary.drifts.contains { $0 === cachedDrift } && cachedDrift.heights == cachedHeights,
+              "cache hits preserve accumulated snow and drift identity")
+        check(cachedDrift.updatedAt == 2, "cache hits advance the last geometry observation time")
+        stationary.elapsed = 2.1
+        stationary.setLedges([Ledge(id: "window-1", rect: roofA.rect.offsetBy(dx: 40, dy: 0), spans: [90...290])])
+        check(cachedDrift.heights.reduce(0, +) < cachedHeights.reduce(0, +),
+              "fast movement after a stationary interval still sheds snow")
+
+    }
 
     let fractional = Snowball(x: 100, y: 10, radius: 30.001)
     let initialLanguage = L10n.english
