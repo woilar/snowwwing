@@ -351,6 +351,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     var infernalMode = false
     var infernalItem: NSMenuItem!
     let languageMenu = NSMenu(title: "Язык")
+    private var appUpdates: AppUpdates?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let id = Bundle.main.bundleIdentifier,
@@ -436,6 +437,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         menu.addItem(.separator())
         dockItem = item("Подключить снег на Dock…", #selector(enableDock))
         _ = item("Как играть…", #selector(showHelp))
+        if !CommandLine.arguments.contains("--smoke-test") {
+            appUpdates = AppUpdates()
+            let updateItem = NSMenuItem(title: "Проверить обновления…",
+                                        action: #selector(AppUpdates.checkForUpdates(_:)),
+                                        keyEquivalent: "")
+            updateItem.target = appUpdates
+            menu.addItem(updateItem)
+        }
         let languageItem = NSMenuItem(title: "Язык", action: nil, keyEquivalent: "")
         languageItem.image = NSImage(systemSymbolName: "globe", accessibilityDescription: nil)
         languageItem.submenu = languageMenu
